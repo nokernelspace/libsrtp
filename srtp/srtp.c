@@ -630,7 +630,7 @@ static srtp_err_status_t srtp_stream_alloc(srtp_stream_ctx_t **str_ptr,
     if (p->key != NULL) {
         str->num_master_keys = 1;
     } else {
-        str->num_master_keys = p->num_master_keys;
+        str->num_master_keys = (unsigned int)p->num_master_keys;
     }
 
     str->session_keys = (srtp_session_keys_t *)srtp_crypto_alloc(
@@ -1709,7 +1709,8 @@ static srtp_err_status_t srtp_stream_init(srtp_stream_ctx_t *srtp,
     /* DAM - no RTCP key limit at present */
 
     /* initialize keys */
-    err = srtp_stream_init_all_master_keys(srtp, p);
+    err = srtp_stream_init_all_master_keys(srtp, p->key, p->keys,
+                                           (unsigned int)p->num_master_keys);
     if (err) {
         srtp_rdbx_dealloc(&srtp->rtp_rdbx);
         return err;
@@ -1961,62 +1962,22 @@ static void srtp_calc_aead_iv(srtp_session_keys_t *session_keys,
     v128_xor(iv, &in, &salt);
 }
 
-static srtp_err_status_t srtp_get_session_keys_for_packet(
-    srtp_stream_ctx_t *stream,
-    const uint8_t *hdr,
-    size_t pkt_octet_len,
-    size_t tag_len,
-    srtp_session_keys_t **session_keys)
+static srtp_session_keys_t *srtp_get_session_keys(srtp_stream_ctx_t *stream,
+                                                  const uint8_t *hdr,
+                                                  unsigned int pkt_octet_len,
+                                                  unsigned int *mki_size,
+                                                  unsigned int tag_len)
 {
-    if (!stream->use_mki) {
-        *session_keys = &stream->session_keys[0];
-        return srtp_err_status_ok;
+    unsigned int base_mki_start_location = pkt_octet_len;
+    unsigned int mki_start_location = 0;
+    unsigned int i = 0;
+
+    if (tag_len > base_mki_start_location) {
+        *mki_size = 0;
+        return NULL;
     }
 
-    size_t mki_start_location = pkt_octet_len;
-
-    if (tag_len > mki_start_location) {
-        return srtp_err_status_bad_mki;
-    }
-
-    mki_start_location -= tag_len;
-
-    if (stream->mki_size > mki_start_location) {
-        return srtp_err_status_bad_mki;
-    }
-
-    mki_start_location -= stream->mki_size;
-
-    for (size_t i = 0; i < stream->num_master_keys; i++) {
-        if (memcmp(hdr + mki_start_location, stream->session_keys[i].mki_id,
-                   stream->mki_size) == 0) {
-            *session_keys = &stream->session_keys[i];
-            return srtp_err_status_ok;
-        }
-    }
-
-    return srtp_err_status_bad_mki;
-}
-
-static srtp_err_status_t srtp_get_session_keys_for_rtp_packet(
-    srtp_stream_ctx_t *stream,
-    const uint8_t *hdr,
-    size_t pkt_octet_len,
-    srtp_session_keys_t **session_keys)
-{
-    size_t tag_len = 0;
-
-    // Determine the authentication tag size
-    if (stream->session_keys[0].rtp_cipher->algorithm == SRTP_AES_GCM_128 ||
-        stream->session_keys[0].rtp_cipher->algorithm == SRTP_AES_GCM_256) {
-        tag_len = 0;
-    } else {
-        tag_len = srtp_auth_get_tag_length(stream->session_keys[0].rtp_auth);
-    }
-
-    return srtp_get_session_keys_for_packet(stream, hdr, pkt_octet_len, tag_len,
-                                            session_keys);
-}
+    base_mki_start_location -= tag_len;
 
 static srtp_err_status_t srtp_get_session_keys_for_rtcp_packet(
     srtp_stream_ctx_t *stream,
@@ -2036,6 +1997,44 @@ static srtp_err_status_t srtp_get_session_keys_for_rtcp_packet(
 
     return srtp_get_session_keys_for_packet(stream, hdr, pkt_octet_len, tag_len,
                                             session_keys);
+}
+
+static srtp_session_keys_t *srtp_get_session_keys_rtp(
+    srtp_stream_ctx_t *stream,
+    const uint8_t *hdr,
+    unsigned int pkt_octet_len,
+    unsigned int *mki_size)
+{
+    unsigned int tag_len = 0;
+
+    // Determine the authentication tag size
+    if (stream->session_keys[0].rtp_cipher->algorithm == SRTP_AES_GCM_128 ||
+        stream->session_keys[0].rtp_cipher->algorithm == SRTP_AES_GCM_256) {
+        tag_len = 0;
+    } else {
+        tag_len = srtp_auth_get_tag_length(stream->session_keys[0].rtp_auth);
+    }
+
+    return srtp_get_session_keys(stream, hdr, pkt_octet_len, mki_size, tag_len);
+}
+
+static srtp_session_keys_t *srtp_get_session_keys_rtcp(
+    srtp_stream_ctx_t *stream,
+    const uint8_t *hdr,
+    unsigned int pkt_octet_len,
+    unsigned int *mki_size)
+{
+    unsigned int tag_len = 0;
+
+    // Determine the authentication tag size
+    if (stream->session_keys[0].rtcp_cipher->algorithm == SRTP_AES_GCM_128 ||
+        stream->session_keys[0].rtcp_cipher->algorithm == SRTP_AES_GCM_256) {
+        tag_len = 0;
+    } else {
+        tag_len = srtp_auth_get_tag_length(stream->session_keys[0].rtcp_auth);
+    }
+
+    return srtp_get_session_keys(stream, hdr, pkt_octet_len, mki_size, tag_len);
 }
 
 static srtp_err_status_t srtp_estimate_index(srtp_rdbx_t *rdbx,
@@ -2908,10 +2907,15 @@ srtp_err_status_t srtp_unprotect(srtp_t ctx,
     debug_print(mod_srtp, "estimated u_packet index: %016" PRIx64, est);
 
     /* Determine if MKI is being used and what session keys should be used */
-    status = srtp_get_session_keys_for_rtp_packet(stream, srtp, srtp_len,
-                                                  &session_keys);
-    if (status) {
-        return status;
+    if (use_mki) {
+        session_keys =
+            srtp_get_session_keys_rtp(stream, (const uint8_t *)hdr,
+                                      (unsigned int)*pkt_octet_len, &mki_size);
+
+        if (session_keys == NULL)
+            return srtp_err_status_bad_mki;
+    } else {
+        session_keys = &stream->session_keys[0];
     }
 
     /*
@@ -4603,10 +4607,14 @@ srtp_err_status_t srtp_unprotect_rtcp(srtp_t ctx,
     /*
      * Determine if MKI is being used and what session keys should be used
      */
-    status = srtp_get_session_keys_for_rtcp_packet(stream, srtcp, srtcp_len,
-                                                   &session_keys);
-    if (status) {
-        return status;
+    if (use_mki) {
+        session_keys = srtp_get_session_keys_rtcp(
+            stream, (uint8_t *)hdr, (unsigned int)*pkt_octet_len, &mki_size);
+
+        if (session_keys == NULL)
+            return srtp_err_status_bad_mki;
+    } else {
+        session_keys = &stream->session_keys[0];
     }
 
     /* get tag length from stream context */

@@ -282,7 +282,7 @@ bool bitvector_alloc(bitvector_t *v, size_t length)
             return false;
         }
     }
-    v->length = length;
+    v->length = (uint32_t)length;
 
     /* initialize bitvector to zero */
     bitvector_set_to_zero(v);

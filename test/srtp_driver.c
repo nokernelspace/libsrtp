@@ -6135,16 +6135,16 @@ const srtp_policy_t aes_256_hmac_32_policy = {
     },
     NULL,
     (srtp_master_key_t **)test_256_keys,
-    2,                /* indicates the number of Master keys          */
-    true,             /* no mki */
-    TEST_MKI_ID_SIZE, /* mki size */
-    128,              /* replay window size                           */
-    false,            /* retransmission not allowed                   */
-    NULL,             /* no encrypted extension headers               */
-    0,                /* list of encrypted extension headers is empty */
-    false,            /* cryptex                                      */
+    2,    /* indicates the number of Master keys          */
+    NULL, /* indicates that EKT is not in use             */
+    128,  /* replay window size                           */
+    0,    /* retransmission not allowed                   */
+    NULL, /* no encrypted extension headers               */
+    0,    /* list of encrypted extension headers is empty */
     NULL
 };
+
+char ekt_test_policy = 'x';
 
 const srtp_policy_t hmac_only_with_no_master_key = {
     { ssrc_any_outbound, 0 }, /* SSRC */

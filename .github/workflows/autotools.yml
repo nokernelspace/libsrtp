@@ -3,9 +3,9 @@ name: AutoTools CI
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ 2_x_dev ]
   pull_request:
-    branches: [ main ]
+    branches: [ 2_x_dev ]
 
 jobs:
   build:
