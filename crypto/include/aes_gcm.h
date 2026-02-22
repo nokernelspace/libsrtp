@@ -56,28 +56,60 @@
 #include <openssl/aes.h>
 
 typedef struct {
-    int key_size;
-    int tag_len;
+    size_t key_size;
+    size_t tag_len;
     EVP_CIPHER_CTX *ctx;
     srtp_cipher_direction_t dir;
 } srtp_aes_gcm_ctx_t;
 
 #endif /* OPENSSL */
 
-#ifdef MBEDTLS
+#ifdef WOLFSSL
 #define MAX_AD_SIZE 2048
-#include <mbedtls/aes.h>
-#include <mbedtls/gcm.h>
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
+#ifndef WOLFSSL_USER_SETTINGS
+#include <wolfssl/options.h>
+#endif
+#include <wolfssl/wolfcrypt/settings.h>
+#include <wolfssl/wolfcrypt/aes.h>
 
 typedef struct {
-    int key_size;
-    int tag_len;
-    int aad_size;
-    int iv_len;
-    uint8_t iv[12];
-    uint8_t tag[16];
+    size_t key_size;
+    size_t tag_len;
+#ifndef WOLFSSL_AESGCM_STREAM
+    size_t aad_size;
+    size_t iv_len;
+    uint8_t iv[GCM_NONCE_MID_SZ];
     uint8_t aad[MAX_AD_SIZE];
-    mbedtls_gcm_context *ctx;
+#endif
+    Aes *ctx;
+    srtp_cipher_direction_t dir;
+} srtp_aes_gcm_ctx_t;
+
+#endif /* WOLFSSL */
+
+#ifdef MBEDTLS
+#define MAX_AD_SIZE 2048
+#include <psa/crypto.h>
+
+/**
+ * \brief          The GCM context structure.
+ */
+typedef struct psa_gcm_context {
+    psa_aead_operation_t op; /*!< The cipher context used. */
+    psa_key_id_t key_id;
+} psa_gcm_context;
+
+typedef struct {
+    size_t key_size;
+    size_t tag_len;
+    size_t aad_size;
+    size_t iv_len;
+    uint8_t iv[12];
+    uint8_t aad[MAX_AD_SIZE];
+    psa_gcm_context *ctx;
     srtp_cipher_direction_t dir;
 } srtp_aes_gcm_ctx_t;
 
@@ -93,16 +125,15 @@ typedef struct {
 #define MAX_AD_SIZE 2048
 
 typedef struct {
-    int key_size;
-    int tag_size;
+    size_t key_size;
+    size_t tag_size;
     srtp_cipher_direction_t dir;
     NSSInitContext *nss;
     PK11SymKey *key;
     uint8_t iv[12];
     uint8_t aad[MAX_AD_SIZE];
-    int aad_size;
+    size_t aad_size;
     CK_GCM_PARAMS params;
-    uint8_t tag[16];
 } srtp_aes_gcm_ctx_t;
 
 #endif /* NSS */

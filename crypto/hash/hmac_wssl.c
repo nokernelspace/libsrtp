@@ -1,9 +1,9 @@
 /*
- * hmac_mbedtls.c
+ * hmac_wssl.c
  *
- * Implementation of hmac srtp_auth_type_t that leverages Mbedtls
+ * Implementation of hmac srtp_auth_type_t that uses wolfSSL
  *
- * YongCheng Yang
+ * Sean Parkinson, wolfSSL
  */
 /*
  *
@@ -44,33 +44,31 @@
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
-
+#ifndef WOLFSSL_USER_SETTINGS
+#include <wolfssl/options.h>
+#endif
+#include <wolfssl/wolfcrypt/settings.h>
+#include <wolfssl/wolfcrypt/hmac.h>
 #include "auth.h"
 #include "alloc.h"
 #include "err.h" /* for srtp_debug */
 #include "auth_test_cases.h"
-#include <psa/crypto.h>
-
-typedef struct {
-    psa_mac_operation_t op;
-    psa_key_id_t key_id;
-    size_t key_len;
-} psa_hmac_ctx_t;
 
 #define SHA1_DIGEST_SIZE 20
 
 /* the debug module for authentiation */
 
 srtp_debug_module_t srtp_mod_hmac = {
-    false,               /* debugging is off by default */
-    "hmac sha-1 mbedtls" /* printable name for module   */
+    0,                /* debugging is off by default */
+    "hmac sha-1 wssl" /* printable name for module   */
 };
 
-static srtp_err_status_t srtp_hmac_mbedtls_alloc(srtp_auth_t **a,
+static srtp_err_status_t srtp_hmac_wolfssl_alloc(srtp_auth_t **a,
                                                  size_t key_len,
                                                  size_t out_len)
 {
     extern const srtp_auth_type_t srtp_hmac;
+    int err;
 
     debug_print(srtp_mod_hmac, "allocating auth func with key length %zu",
                 key_len);
@@ -86,16 +84,21 @@ static srtp_err_status_t srtp_hmac_mbedtls_alloc(srtp_auth_t **a,
     if (*a == NULL) {
         return srtp_err_status_alloc_fail;
     }
-    // allocate the buffer of mbedtls context.
-    (*a)->state = srtp_crypto_alloc(sizeof(psa_hmac_ctx_t));
-
+    // allocate the buffer of wolfssl context.
+    (*a)->state = srtp_crypto_alloc(sizeof(Hmac));
     if ((*a)->state == NULL) {
         srtp_crypto_free(*a);
         *a = NULL;
         return srtp_err_status_alloc_fail;
     }
-
-    (((psa_hmac_ctx_t *)((*a)->state))->op) = psa_mac_operation_init();
+    err = wc_HmacInit((Hmac *)(*a)->state, NULL, INVALID_DEVID);
+    if (err < 0) {
+        srtp_crypto_free((*a)->state);
+        srtp_crypto_free(*a);
+        *a = NULL;
+        debug_print(srtp_mod_hmac, "wolfSSL error code: %d", err);
+        return srtp_err_status_init_fail;
+    }
 
     /* set pointers */
     (*a)->type = &srtp_hmac;
@@ -106,13 +109,10 @@ static srtp_err_status_t srtp_hmac_mbedtls_alloc(srtp_auth_t **a,
     return srtp_err_status_ok;
 }
 
-static srtp_err_status_t srtp_hmac_mbedtls_dealloc(srtp_auth_t *a)
+static srtp_err_status_t srtp_hmac_wolfssl_dealloc(srtp_auth_t *a)
 {
-    psa_hmac_ctx_t *hmac_ctx;
-    hmac_ctx = (psa_hmac_ctx_t *)a->state;
-
-    psa_destroy_key(hmac_ctx->key_id);
-    srtp_crypto_free(hmac_ctx);
+    wc_HmacFree((Hmac *)a->state);
+    srtp_crypto_free(a->state);
     /* zeroize entire state*/
     octet_string_set_to_zero(a, sizeof(srtp_auth_t));
 
@@ -122,98 +122,81 @@ static srtp_err_status_t srtp_hmac_mbedtls_dealloc(srtp_auth_t *a)
     return srtp_err_status_ok;
 }
 
-static srtp_err_status_t srtp_hmac_mbedtls_start(void *statev)
+static srtp_err_status_t srtp_hmac_wolfssl_start(void *statev)
 {
-    psa_hmac_ctx_t *state = (psa_hmac_ctx_t *)statev;
-
-    if (psa_mac_abort(&state->op) != 0) {
-        return srtp_err_status_auth_fail;
-    }
-
-    if (psa_mac_sign_setup(&state->op, state->key_id,
-                           PSA_ALG_HMAC(PSA_ALG_SHA_1)) != 0) {
-        psa_mac_abort(&state->op);
-        return srtp_err_status_auth_fail;
-    }
-
+    (void)statev;
     return srtp_err_status_ok;
 }
 
-static srtp_err_status_t srtp_hmac_mbedtls_init(void *statev,
+static srtp_err_status_t srtp_hmac_wolfssl_init(void *statev,
                                                 const uint8_t *key,
                                                 size_t key_len)
 {
-    psa_hmac_ctx_t *state = (psa_hmac_ctx_t *)statev;
-    psa_status_t status = PSA_SUCCESS;
-    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    Hmac *state = (Hmac *)statev;
+    int err;
 
-    psa_set_key_type(&attr, PSA_KEY_TYPE_HMAC);
-    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_SIGN_MESSAGE);
-    psa_set_key_algorithm(&attr, PSA_ALG_HMAC(PSA_ALG_SHA_1));
-
-    status = psa_import_key(&attr, key, key_len, &state->key_id);
-    state->key_len = key_len;
-    if (status != PSA_SUCCESS) {
-        psa_destroy_key(state->key_id);
-        debug_print(srtp_mod_hmac, "mbedtls error code:  %d", status);
-        return status;
+    err = wc_HmacSetKey(state, WC_SHA, key, key_len);
+    if (err < 0) {
+        debug_print(srtp_mod_hmac, "wolfSSL error code: %d", err);
+        return srtp_err_status_auth_fail;
     }
 
     return srtp_err_status_ok;
 }
 
-static srtp_err_status_t srtp_hmac_mbedtls_update(void *statev,
+static srtp_err_status_t srtp_hmac_wolfssl_update(void *statev,
                                                   const uint8_t *message,
                                                   size_t msg_octets)
 {
-    psa_hmac_ctx_t *state = (psa_hmac_ctx_t *)statev;
+    Hmac *state = (Hmac *)statev;
+    int err;
 
     debug_print(srtp_mod_hmac, "input: %s",
                 srtp_octet_string_hex_string(message, msg_octets));
 
-    if (psa_mac_update(&state->op, message, msg_octets) != 0) {
-        psa_mac_abort(&state->op);
+    err = wc_HmacUpdate(state, message, msg_octets);
+    if (err < 0) {
+        debug_print(srtp_mod_hmac, "wolfSSL error code: %d", err);
         return srtp_err_status_auth_fail;
     }
 
     return srtp_err_status_ok;
 }
 
-static srtp_err_status_t srtp_hmac_mbedtls_compute(void *statev,
+static srtp_err_status_t srtp_hmac_wolfssl_compute(void *statev,
                                                    const uint8_t *message,
                                                    size_t msg_octets,
                                                    size_t tag_len,
                                                    uint8_t *result)
 {
-    psa_hmac_ctx_t *state = (psa_hmac_ctx_t *)statev;
+    Hmac *state = (Hmac *)statev;
+    uint8_t hash_value[WC_SHA_DIGEST_SIZE];
+    int err;
+    int i;
 
-    uint8_t hash_value[SHA1_DIGEST_SIZE];
-    size_t i;
+    debug_print(srtp_mod_hmac, "input: %s",
+                srtp_octet_string_hex_string(message, msg_octets));
 
     /* check tag length, return error if we can't provide the value expected */
-    if (tag_len > SHA1_DIGEST_SIZE) {
+    if (tag_len > WC_SHA_DIGEST_SIZE) {
         return srtp_err_status_bad_param;
     }
 
     /* hash message, copy output into H */
-    if (psa_mac_update(&state->op, message, msg_octets) != 0) {
+    err = wc_HmacUpdate(state, message, msg_octets);
+    if (err < 0) {
+        debug_print(srtp_mod_hmac, "wolfSSL error code: %d", err);
         return srtp_err_status_auth_fail;
     }
 
-    /* The `psa_mac_sign_finish` function can provide output length. I'm not
-    sure if it's usable or not now I just assigne it to a local variable named
-    `out_len`. I think the `out_len` must be equal to `tag_len`*/
-
-    size_t out_len = 0;
-
-    if (psa_mac_sign_finish(&state->op, hash_value, sizeof(hash_value),
-                            &out_len) != 0) {
-        psa_mac_abort(&state->op);
+    err = wc_HmacFinal(state, hash_value);
+    if (err < 0) {
+        debug_print(srtp_mod_hmac, "wolfSSL error code: %d", err);
         return srtp_err_status_auth_fail;
     }
 
     /* copy hash_value to *result */
-    for (i = 0; i < tag_len; i++) {
+    for (i = 0; i < (int)tag_len; i++) {
         result[i] = hash_value[i];
     }
 
@@ -225,21 +208,21 @@ static srtp_err_status_t srtp_hmac_mbedtls_compute(void *statev,
 
 /* end test case 0 */
 
-static const char srtp_hmac_mbedtls_description[] =
-    "hmac sha-1 authentication function using mbedtls";
+static const char srtp_hmac_wolfssl_description[] =
+    "hmac sha-1 authentication function using wolfSSL";
 
 /*
  * srtp_auth_type_t hmac is the hmac metaobject
  */
 
 const srtp_auth_type_t srtp_hmac = {
-    srtp_hmac_mbedtls_alloc,       /* */
-    srtp_hmac_mbedtls_dealloc,     /* */
-    srtp_hmac_mbedtls_init,        /* */
-    srtp_hmac_mbedtls_compute,     /* */
-    srtp_hmac_mbedtls_update,      /* */
-    srtp_hmac_mbedtls_start,       /* */
-    srtp_hmac_mbedtls_description, /* */
+    srtp_hmac_wolfssl_alloc,       /* */
+    srtp_hmac_wolfssl_dealloc,     /* */
+    srtp_hmac_wolfssl_init,        /* */
+    srtp_hmac_wolfssl_compute,     /* */
+    srtp_hmac_wolfssl_update,      /* */
+    srtp_hmac_wolfssl_start,       /* */
+    srtp_hmac_wolfssl_description, /* */
     &srtp_hmac_test_case_0,        /* */
     SRTP_HMAC_SHA1                 /* */
 };

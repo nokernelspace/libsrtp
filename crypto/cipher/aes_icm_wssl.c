@@ -1,9 +1,9 @@
 /*
- * aes_icm_mbedtls.c
+ * aes_icm_wssl.c
  *
- * AES Integer Counter Mode
+ * AES Integer Counter Mode using wolfSSL
  *
- * YongCheng Yang
+ * Sean Parkinson, wolfSSL
  */
 
 /*
@@ -45,9 +45,11 @@
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
-#include <psa/crypto_types.h>
-#include <psa/crypto.h>
-
+#ifndef WOLFSSL_USER_SETTINGS
+#include <wolfssl/options.h>
+#endif
+#include <wolfssl/wolfcrypt/settings.h>
+#include <wolfssl/wolfcrypt/aes.h>
 #include "aes_icm_ext.h"
 #include "crypto_types.h"
 #include "err.h" /* for srtp_debug */
@@ -56,92 +58,8 @@
 #include "cipher_test_cases.h"
 
 srtp_debug_module_t srtp_mod_aes_icm = {
-    false,            /* debugging is off by default */
-    "aes icm mbedtls" /* printable module name       */
-};
-
-/*
- * static function declarations.
- */
-static srtp_err_status_t srtp_aes_icm_mbedtls_alloc(srtp_cipher_t **c,
-                                                    size_t key_len,
-                                                    size_t tlen);
-
-static srtp_err_status_t srtp_aes_icm_mbedtls_dealloc(srtp_cipher_t *c);
-
-static srtp_err_status_t srtp_aes_icm_mbedtls_context_init(void *cv,
-                                                           const uint8_t *key);
-
-static srtp_err_status_t srtp_aes_icm_mbedtls_set_iv(
-    void *cv,
-    uint8_t *iv,
-    srtp_cipher_direction_t dir);
-
-static srtp_err_status_t srtp_aes_icm_mbedtls_encrypt(void *cv,
-                                                      const uint8_t *src,
-                                                      size_t src_len,
-                                                      uint8_t *dst,
-                                                      size_t *dst_len);
-
-/*
- * Name of this crypto engine
- */
-static const char srtp_aes_icm_128_mbedtls_description[] =
-    "AES-128 counter mode using mbedtls";
-static const char srtp_aes_icm_192_mbedtls_description[] =
-    "AES-192 counter mode using mbedtls";
-static const char srtp_aes_icm_256_mbedtls_description[] =
-    "AES-256 counter mode using mbedtls";
-
-/*
- * This is the function table for this crypto engine.
- * note: the encrypt function is identical to the decrypt function
- */
-const srtp_cipher_type_t srtp_aes_icm_128 = {
-    srtp_aes_icm_mbedtls_alloc,           /* */
-    srtp_aes_icm_mbedtls_dealloc,         /* */
-    srtp_aes_icm_mbedtls_context_init,    /* */
-    0,                                    /* set_aad */
-    srtp_aes_icm_mbedtls_encrypt,         /* */
-    srtp_aes_icm_mbedtls_encrypt,         /* */
-    srtp_aes_icm_mbedtls_set_iv,          /* */
-    srtp_aes_icm_128_mbedtls_description, /* */
-    &srtp_aes_icm_128_test_case_0,        /* */
-    SRTP_AES_ICM_128                      /* */
-};
-
-/*
- * This is the function table for this crypto engine.
- * note: the encrypt function is identical to the decrypt function
- */
-const srtp_cipher_type_t srtp_aes_icm_192 = {
-    srtp_aes_icm_mbedtls_alloc,           /* */
-    srtp_aes_icm_mbedtls_dealloc,         /* */
-    srtp_aes_icm_mbedtls_context_init,    /* */
-    0,                                    /* set_aad */
-    srtp_aes_icm_mbedtls_encrypt,         /* */
-    srtp_aes_icm_mbedtls_encrypt,         /* */
-    srtp_aes_icm_mbedtls_set_iv,          /* */
-    srtp_aes_icm_192_mbedtls_description, /* */
-    &srtp_aes_icm_192_test_case_0,        /* */
-    SRTP_AES_ICM_192                      /* */
-};
-
-/*
- * This is the function table for this crypto engine.
- * note: the encrypt function is identical to the decrypt function
- */
-const srtp_cipher_type_t srtp_aes_icm_256 = {
-    srtp_aes_icm_mbedtls_alloc,           /* */
-    srtp_aes_icm_mbedtls_dealloc,         /* */
-    srtp_aes_icm_mbedtls_context_init,    /* */
-    0,                                    /* set_aad */
-    srtp_aes_icm_mbedtls_encrypt,         /* */
-    srtp_aes_icm_mbedtls_encrypt,         /* */
-    srtp_aes_icm_mbedtls_set_iv,          /* */
-    srtp_aes_icm_256_mbedtls_description, /* */
-    &srtp_aes_icm_256_test_case_0,        /* */
-    SRTP_AES_ICM_256                      /* */
+    0,             /* debugging is off by default */
+    "aes icm wssl" /* printable module name       */
 };
 
 /*
@@ -199,7 +117,7 @@ const srtp_cipher_type_t srtp_aes_icm_256 = {
  * value.  The tlen argument is for the AEAD tag length, which
  * isn't used in counter mode.
  */
-static srtp_err_status_t srtp_aes_icm_mbedtls_alloc(srtp_cipher_t **c,
+static srtp_err_status_t srtp_aes_icm_wolfssl_alloc(srtp_cipher_t **c,
                                                     size_t key_len,
                                                     size_t tlen)
 {
@@ -230,21 +148,8 @@ static srtp_err_status_t srtp_aes_icm_mbedtls_alloc(srtp_cipher_t **c,
         *c = NULL;
         return srtp_err_status_alloc_fail;
     }
+    icm->ctx = NULL;
 
-    icm->ctx =
-        (psa_aes_icm_ctx_t *)srtp_crypto_alloc(sizeof(psa_aes_icm_ctx_t));
-
-    if (icm->ctx == NULL) {
-        srtp_crypto_free(icm);
-        srtp_crypto_free(*c);
-        *c = NULL;
-        return srtp_err_status_alloc_fail;
-    }
-
-    ((icm->ctx))->key_id = PSA_KEY_ID_NULL;
-    ((icm->ctx)->op) = psa_cipher_operation_init();
-
-    /* set pointers */
     (*c)->state = icm;
 
     /* setup cipher parameters */
@@ -275,7 +180,7 @@ static srtp_err_status_t srtp_aes_icm_mbedtls_alloc(srtp_cipher_t **c,
 /*
  * This function deallocates an instance of this engine
  */
-static srtp_err_status_t srtp_aes_icm_mbedtls_dealloc(srtp_cipher_t *c)
+static srtp_err_status_t srtp_aes_icm_wolfssl_dealloc(srtp_cipher_t *c)
 {
     srtp_aes_icm_ctx_t *ctx;
 
@@ -288,8 +193,10 @@ static srtp_err_status_t srtp_aes_icm_mbedtls_dealloc(srtp_cipher_t *c)
      */
     ctx = (srtp_aes_icm_ctx_t *)c->state;
     if (ctx != NULL) {
-        psa_destroy_key(ctx->ctx->key_id);
-        srtp_crypto_free(ctx->ctx);
+        if (ctx->ctx != NULL) {
+            wc_AesFree(ctx->ctx);
+            srtp_crypto_free(ctx->ctx);
+        }
         /* zeroize the key material */
         octet_string_set_to_zero(ctx, sizeof(srtp_aes_icm_ctx_t));
         srtp_crypto_free(ctx);
@@ -301,15 +208,28 @@ static srtp_err_status_t srtp_aes_icm_mbedtls_dealloc(srtp_cipher_t *c)
     return srtp_err_status_ok;
 }
 
-static srtp_err_status_t srtp_aes_icm_mbedtls_context_init(void *cv,
+static srtp_err_status_t srtp_aes_icm_wolfssl_context_init(void *cv,
                                                            const uint8_t *key)
 {
     srtp_aes_icm_ctx_t *c = (srtp_aes_icm_ctx_t *)cv;
-    uint32_t key_size_in_bits = (c->key_size << 3);
-    psa_status_t status = PSA_SUCCESS;
+    int err;
 
-    status = psa_crypto_init();
+    if (c->ctx == NULL) {
+        c->ctx = (Aes *)srtp_crypto_alloc(sizeof(Aes));
+        if (c->ctx == NULL) {
+            return srtp_err_status_alloc_fail;
+        }
 
+        err = wc_AesInit(c->ctx, NULL, INVALID_DEVID);
+        if (err < 0) {
+            debug_print(srtp_mod_aes_icm, "wolfSSL error code: %d", err);
+            srtp_crypto_free(c->ctx);
+            c->ctx = NULL;
+            return srtp_err_status_init_fail;
+        }
+    }
+
+    /* set pointers */
     /*
      * set counter and initial values to 'offset' value, being careful not to
      * go past the end of the key buffer
@@ -336,26 +256,11 @@ static srtp_err_status_t srtp_aes_icm_mbedtls_context_init(void *cv,
         break;
     }
 
-    /* Set key attributes */
-    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-
-    psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
-    psa_set_key_bits(&attr, key_size_in_bits);
-    psa_set_key_usage_flags(&attr,
-                            PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT);
-    psa_set_key_algorithm(&attr, PSA_ALG_CTR);
-
-    if (c->ctx->key_id != PSA_KEY_ID_NULL) {
-        c->ctx->key_id = PSA_KEY_ID_NULL;
+    /* Store key. */
+    if (c->key_size > sizeof(c->key)) {
+        return srtp_err_status_bad_param;
     }
-
-    status =
-        psa_import_key(&attr, key, key_size_in_bits / 8, &(c->ctx->key_id));
-
-    if (status != PSA_SUCCESS) {
-        psa_destroy_key(c->ctx->key_id);
-        debug_print(srtp_mod_aes_icm, "status: %d", status);
-    }
+    memcpy(c->key, key, c->key_size);
 
     return srtp_err_status_ok;
 }
@@ -364,18 +269,16 @@ static srtp_err_status_t srtp_aes_icm_mbedtls_context_init(void *cv,
  * aes_icm_set_iv(c, iv) sets the counter value to the exor of iv with
  * the offset
  */
-static srtp_err_status_t srtp_aes_icm_mbedtls_set_iv(
+static srtp_err_status_t srtp_aes_icm_wolfssl_set_iv(
     void *cv,
     uint8_t *iv,
     srtp_cipher_direction_t dir)
 {
     srtp_aes_icm_ctx_t *c = (srtp_aes_icm_ctx_t *)cv;
     v128_t nonce;
-    psa_status_t status = PSA_SUCCESS;
-
+    int err;
     (void)dir;
 
-    c->nc_off = 0;
     /* set nonce (for alignment) */
     v128_copy_octet_string(&nonce, iv);
 
@@ -386,25 +289,12 @@ static srtp_err_status_t srtp_aes_icm_mbedtls_set_iv(
     debug_print(srtp_mod_aes_icm, "set_counter: %s",
                 v128_hex_string(&c->counter));
 
-    status = psa_cipher_abort(&c->ctx->op);
-    if (status != PSA_SUCCESS) {
-        debug_print(srtp_mod_aes_icm, "abort error: %d", status);
-        return srtp_err_status_cipher_fail;
-    }
-
-    status =
-        psa_cipher_encrypt_setup(&(c->ctx->op), c->ctx->key_id, PSA_ALG_CTR);
-    if (status != PSA_SUCCESS) {
-        psa_cipher_abort(&c->ctx->op);
-        debug_print(srtp_mod_aes_icm, "setup error: %d", status);
-        return srtp_err_status_cipher_fail;
-    }
-
-    status = psa_cipher_set_iv(&c->ctx->op, c->counter.v8, 16);
-    if (status != PSA_SUCCESS) {
-        debug_print(srtp_mod_aes_icm, "set iv error: %d", status);
-        psa_cipher_abort(&c->ctx->op);
-        return srtp_err_status_cipher_fail;
+    /* Counter mode always encrypts. */
+    err = wc_AesSetKey(c->ctx, c->key, c->key_size, c->counter.v8,
+                       AES_ENCRYPTION);
+    if (err < 0) {
+        debug_print(srtp_mod_aes_icm, "wolfSSL error code: %d", err);
+        return srtp_err_status_fail;
     }
 
     return srtp_err_status_ok;
@@ -414,14 +304,11 @@ static srtp_err_status_t srtp_aes_icm_mbedtls_set_iv(
  * This function encrypts a buffer using AES CTR mode
  *
  * Parameters:
- *	cv	Crypto contexts
- *  src plaintext buffer
- *  src_len length of plaintext
- *	dst	encrypted data buffer
- *	dst_len	At the begining of function, length of encrypted data buffer.
- *  des_len At the end of function, length of the actual encrypted data.
+ *	c	Crypto context
+ *	buf	data to encrypt
+ *	enc_len	length of encrypt buffer
  */
-static srtp_err_status_t srtp_aes_icm_mbedtls_encrypt(void *cv,
+static srtp_err_status_t srtp_aes_icm_wolfssl_encrypt(void *cv,
                                                       const uint8_t *src,
                                                       size_t src_len,
                                                       uint8_t *dst,
@@ -429,27 +316,84 @@ static srtp_err_status_t srtp_aes_icm_mbedtls_encrypt(void *cv,
 {
     srtp_aes_icm_ctx_t *c = (srtp_aes_icm_ctx_t *)cv;
 
-    psa_status_t status = PSA_SUCCESS;
-    size_t out_len = 0;
-
+    int err;
     debug_print(srtp_mod_aes_icm, "rs0: %s", v128_hex_string(&c->counter));
-    debug_print(srtp_mod_aes_icm, "source: %s",
-                srtp_octet_string_hex_string(src, src_len));
+
+    if (dst_len == NULL) {
+        return srtp_err_status_bad_param;
+    }
 
     if (*dst_len < src_len) {
         return srtp_err_status_buffer_small;
     }
-    status =
-        psa_cipher_update(&(c->ctx->op), src, src_len, dst, *dst_len, &out_len);
 
-    if (status != PSA_SUCCESS) {
-        debug_print(srtp_mod_aes_icm, "encrypt error: %d", status);
-        psa_cipher_abort(&c->ctx->op);
+    err = wc_AesCtrEncrypt(c->ctx, dst, src, src_len);
+    if (err < 0) {
+        debug_print(srtp_mod_aes_icm, "wolfSSL encrypt error: %d", err);
         return srtp_err_status_cipher_fail;
     }
-    *dst_len = out_len;
-    debug_print(srtp_mod_aes_icm, "encrypted: %s",
-                srtp_octet_string_hex_string(dst, *dst_len));
+    *dst_len = src_len;
 
     return srtp_err_status_ok;
 }
+
+/*
+ * Name of this crypto engine
+ */
+static const char srtp_aes_icm_128_wolfssl_description[] =
+    "AES-128 counter mode using wolfSSL";
+static const char srtp_aes_icm_192_wolfssl_description[] =
+    "AES-192 counter mode using wolfSSL";
+static const char srtp_aes_icm_256_wolfssl_description[] =
+    "AES-256 counter mode using wolfSSL";
+
+/*
+ * This is the function table for this crypto engine.
+ * note: the encrypt function is identical to the decrypt function
+ */
+const srtp_cipher_type_t srtp_aes_icm_128 = {
+    srtp_aes_icm_wolfssl_alloc,           /* */
+    srtp_aes_icm_wolfssl_dealloc,         /* */
+    srtp_aes_icm_wolfssl_context_init,    /* */
+    0,                                    /* set_aad */
+    srtp_aes_icm_wolfssl_encrypt,         /* */
+    srtp_aes_icm_wolfssl_encrypt,         /* */
+    srtp_aes_icm_wolfssl_set_iv,          /* */
+    srtp_aes_icm_128_wolfssl_description, /* */
+    &srtp_aes_icm_128_test_case_0,        /* */
+    SRTP_AES_ICM_128                      /* */
+};
+
+/*
+ * This is the function table for this crypto engine.
+ * note: the encrypt function is identical to the decrypt function
+ */
+const srtp_cipher_type_t srtp_aes_icm_192 = {
+    srtp_aes_icm_wolfssl_alloc,           /* */
+    srtp_aes_icm_wolfssl_dealloc,         /* */
+    srtp_aes_icm_wolfssl_context_init,    /* */
+    0,                                    /* set_aad */
+    srtp_aes_icm_wolfssl_encrypt,         /* */
+    srtp_aes_icm_wolfssl_encrypt,         /* */
+    srtp_aes_icm_wolfssl_set_iv,          /* */
+    srtp_aes_icm_192_wolfssl_description, /* */
+    &srtp_aes_icm_192_test_case_0,        /* */
+    SRTP_AES_ICM_192                      /* */
+};
+
+/*
+ * This is the function table for this crypto engine.
+ * note: the encrypt function is identical to the decrypt function
+ */
+const srtp_cipher_type_t srtp_aes_icm_256 = {
+    srtp_aes_icm_wolfssl_alloc,           /* */
+    srtp_aes_icm_wolfssl_dealloc,         /* */
+    srtp_aes_icm_wolfssl_context_init,    /* */
+    0,                                    /* set_aad */
+    srtp_aes_icm_wolfssl_encrypt,         /* */
+    srtp_aes_icm_wolfssl_encrypt,         /* */
+    srtp_aes_icm_wolfssl_set_iv,          /* */
+    srtp_aes_icm_256_wolfssl_description, /* */
+    &srtp_aes_icm_256_test_case_0,        /* */
+    SRTP_AES_ICM_256                      /* */
+};

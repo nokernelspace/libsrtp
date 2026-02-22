@@ -45,9 +45,6 @@
 /* Define to 1 if you have the <inttypes.h> header file. */
 #undef HAVE_INTTYPES_H
 
-/* Define to 1 if you have the `dl' library (-ldl). */
-#undef HAVE_LIBDL
-
 /* Define to 1 if you have the `nspr4' library (-lnspr4). */
 #undef HAVE_LIBNSPR4
 
@@ -56,9 +53,6 @@
 
 /* Define to 1 if you have the `socket' library (-lsocket). */
 #undef HAVE_LIBSOCKET
-
-/* Define to 1 if you have the `z' library (-lz). */
-#undef HAVE_LIBZ
 
 /* Define to 1 if you have the <machine/types.h> header file. */
 #undef HAVE_MACHINE_TYPES_H
@@ -170,6 +164,12 @@
 
 /* Define to 1 if you have the ANSI C header files. */
 #undef STDC_HEADERS
+
+/* Define this to use wolfSSL crypto. */
+#undef WOLFSSL
+
+/* Define this to use wolfSSL KDF for SRTP. */
+#undef WOLFSSL_KDF
 
 /* Define WORDS_BIGENDIAN to 1 if your processor stores words with the most
    significant byte first (like Motorola and SPARC, unlike Intel). */

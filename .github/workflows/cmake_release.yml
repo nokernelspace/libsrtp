@@ -1,10 +1,12 @@
-name: Stream List CI
+name: CMake Release CI
 
 on:
   push:
-    branches: [ 2_x_dev ]
+    branches: [ main ]
   pull_request:
-    branches: [ 2_x_dev ]
+    branches: [ main ]
+  schedule:
+    - cron: '20 4 * * 1'
 
 jobs:
   build:
@@ -12,6 +14,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        lib_type: [static, shared]
+        include:
+          - lib_type: static
+            cmake-lib-type: "-DBUILD_SHARED_LIBS=Off"
+          - lib_type: shared
+            cmake-lib-type: "-DBUILD_SHARED_LIBS=On"
 
     runs-on: ${{ matrix.os }}
 
@@ -19,7 +27,6 @@ jobs:
       CTEST_OUTPUT_ON_FAILURE: 1
 
     steps:
-
     - uses: actions/checkout@v2
 
     - name: Create Build Environment
@@ -28,14 +35,14 @@ jobs:
     - name: Configure CMake
       working-directory: ${{github.workspace}}/build
       shell: bash
-      run: cmake $GITHUB_WORKSPACE -DCRYPTO_LIBRARY=internal -DLIBSRTP_TEST_APPS=ON -DCMAKE_C_FLAGS:STRING="-DSRTP_NO_STREAM_LIST -DSRTP_USE_TEST_STREAM_LIST"
+      run: cmake $GITHUB_WORKSPACE -DLIBSRTP_TEST_APPS=OFF ${{matrix.cmake-lib-type}}
 
     - name: Build
       working-directory: ${{github.workspace}}/build
       shell: bash
-      run: cmake --build . -t srtp_driver
+      run: cmake --build . --config Release
 
-    - name: Test
+    - name: Install
       working-directory: ${{github.workspace}}/build
       shell: bash
-      run: ctest -R srtp_driver
+      run: cmake --install . --prefix ${{github.workspace}}/install --config Release
